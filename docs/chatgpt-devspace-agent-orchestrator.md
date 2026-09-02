@@ -590,15 +590,22 @@ ChatGPT
 使用 DevSpace + Agent Orchestrator 完成工作。
 
 工作区：
-/root/project/ESP32-S3-UACNet
+`/root/project/ESP32-S3-UACNet`
 
-使用 DevSpace 读取和修改源码，并执行短时构建和验证。
+职责分工：
 
-耗时较长的测试、SSH、iperf、持续监控和验收，
-使用 Agent Orchestrator 启动 Claude trusted Worker 执行。
+- 使用 DevSpace：
+  - 读取源码
+  - 修改源码
+  - 查看 diff
+  - 执行短时 shell / 构建 / 快速验证
 
-保留 run_id，并根据 Worker 测试结果继续通过 DevSpace 修改代码，
-再让 Claude Worker 复测，直到完成。
+- 使用 Agent Orchestrator：
+  - 启动 Claude trusted Worker
+  - 执行耗时较长的测试、SSH、iperf、持续监控和验收
+  - 保留 `run_id`，按需查询进度和结果
+  - 执行长耗时任务时，启动后告诉用户 `run_id`、预计总耗时，以及建议多久后查询进度
+  - 查询进度时，报告已运行时间、当前阶段和预计剩余时间
 
 不要只给操作建议；必须实际执行。
 ```
