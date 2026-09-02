@@ -592,7 +592,7 @@ ChatGPT
 工作区：
 `/root/project/ESP32-S3-UACNet`
 
-职责分工：
+工具使用规则：
 
 - 使用 DevSpace：
   - 读取源码
