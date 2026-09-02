@@ -12,7 +12,21 @@
 - `agents/`：不同技术栈或场景的 `AGENTS.md` 模板。
 - `skills/`：可复用 skill 能力包，例如代码审查、Linux 排障、Docker 运维、vLLM 部署等。
 - `templates/`：项目接入、评审、排障、变更说明等模板。
-- `docs/`：命名规范、skill 编写规范、推广指南。
+- `docs/`：命名规范、skill 编写规范、推广指南、工作流实践
+
+### 4. 查阅工作流文档
+
+工作流实践文档位于 `docs/` 目录：
+
+```text
+docs/
+├── chatgpt-devspace-agent-orchestrator.md  # ChatGPT 与 DevSpace/Agent Orchestrator 接入指南
+├── naming-convention.md
+├── skill-spec.md
+└── rollout-guide.md
+```
+
+详细文档请参见 [docs/chatgpt-devspace-agent-orchestrator.md](docs/chatgpt-devspace-agent-orchestrator.md)。
 
 ## 推荐使用方式
 
