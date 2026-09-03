@@ -453,7 +453,32 @@ herdr agent read worker --source visible --lines 100
 - `blocked`：Agent 等待审批或用户输入。
 - `unknown`：Herdr 无法可靠识别状态，不能视为完成。
 
-## 11. 120 秒 PoC 实测
+## 11. 推荐提示词
+
+将下面内容中的工作区路径替换为实际项目路径后，可直接发送给 ChatGPT：
+
+```text
+使用 DevSpace + Herdr 完成工作。
+
+工作区：
+`/path/to/project`
+
+执行要求：
+
+- 使用 DevSpace 读取、搜索和修改源码，查看 diff，并执行短时命令、构建和快速验证。
+- 调用 Herdr 前先确认 HERDR_ENV=1，并读取当前版本的 herdr --skill；如果检查失败，停止调用并说明原因。
+- 遇到耗时较长的构建、测试、SSH、监控或验收任务时，通过 Herdr 在独立 pane 中启动 Claude。
+- 优先复用同一项目中处于 idle 状态的 Claude；否则创建相邻 pane，并保留 agent 名称、pane ID 和 session ID。
+- 提交长任务时不要让单次 MCP 请求阻塞等待。任务启动后，每隔一段时间通过 Herdr 查询状态并读取最新输出，向我汇报进度。
+- 如果调用 Herdr 启动了任务，必须持续跟踪到 idle、done 或 blocked；不得在任务仍为 working 时结束。
+- 若状态为 blocked，先读取阻塞原因并向我确认，不要擅自批准高风险操作。
+- 根据 Claude 的结果继续使用 DevSpace 修改代码，再让 Claude 复测，直到完成。
+- 不要只提供命令或操作建议，必须实际执行。最终结论应附带 diff、命令输出或测试结果。
+```
+
+其中“每隔一段时间”可根据任务时长调整。一般任务建议每 30～60 秒查询一次，长时间测试可适当降低频率。
+
+## 12. 120 秒 PoC 实测
 
 任务要求 Claude 执行：
 
@@ -493,7 +518,7 @@ end=2026-09-03T21:30:29+08:00
 - Herdr 能正确识别 `working → idle` 状态变化。
 - 任务实际耗时为 120 秒，没有提前结束。
 
-## 12. root 用户限制
+## 13. root 用户限制
 
 Claude Code 2.1.246 在 root 下会拒绝：
 
@@ -517,7 +542,7 @@ claude --dangerously-skip-permissions
 
 不要仅为跳过审批而伪造沙箱环境。
 
-## 13. 常见问题
+## 14. 常见问题
 
 ### Herdr 进程存在，但 CLI 报 server not running
 
@@ -564,7 +589,7 @@ herdr agent read worker --source detection --lines 50
 
 任务回到 `idle` 后再读取更多历史。
 
-## 14. 回滚
+## 15. 回滚
 
 回滚会中断当前 DevSpace 与 Herdr 任务，应先确认没有正在执行的 Agent、构建或测试。
 
