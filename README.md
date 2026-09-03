@@ -21,12 +21,16 @@
 ```text
 docs/
 ├── chatgpt-devspace-agent-orchestrator.md  # ChatGPT 与 DevSpace/Agent Orchestrator 接入指南
+├── chatgpt-devspace-herdr.md               # ChatGPT、DevSpace、Herdr 与 Claude 持久化工作流
 ├── naming-convention.md
 ├── skill-spec.md
 └── rollout-guide.md
 ```
 
-详细文档请参见 [docs/chatgpt-devspace-agent-orchestrator.md](docs/chatgpt-devspace-agent-orchestrator.md)。
+工作流文档：
+
+- [DevSpace + Agent Orchestrator 接入指南](docs/chatgpt-devspace-agent-orchestrator.md)
+- [ChatGPT + DevSpace + Herdr + Claude 持久化工作流](docs/chatgpt-devspace-herdr.md)
 
 ## 推荐使用方式
 
