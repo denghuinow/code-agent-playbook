@@ -98,6 +98,20 @@ herdr integration status
 
 ## 5. 配置 Herdr headless 服务
 
+本方案同时把当前 Herdr binary 自带的 Agent Skill 同步到 DevSpace 可以发现的全局 Skill 目录：
+
+```text
+Herdr --skill
+      ↓ 自动同步
+~/.agents/skills/herdr/SKILL.md
+      ↓ DevSpace 自动发现
+DevSpace MCP
+      ↓
+ChatGPT
+```
+
+这样 ChatGPT 可以通过 DevSpace 获得与当前 Herdr 版本匹配的使用规则，不需要在每次任务中重新执行 `herdr --skill`。
+
 创建 `/etc/systemd/system/herdr.service`：
 
 ```ini
@@ -115,6 +129,8 @@ Environment=XDG_CONFIG_HOME=/root/.config
 Environment=HERDR_CONFIG_PATH=/root/.config/herdr/config.toml
 Environment=HERDR_SOCKET_PATH=/root/.config/herdr/herdr.sock
 Environment=PATH=/root/.local/bin:/root/.nvm/versions/node/v22.23.2/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStartPre=/usr/bin/install -d -m 0755 /root/.agents/skills/herdr
+ExecStartPre=/bin/sh -c '/root/.local/bin/herdr --skill > /root/.agents/skills/herdr/SKILL.md.tmp && mv /root/.agents/skills/herdr/SKILL.md.tmp /root/.agents/skills/herdr/SKILL.md'
 ExecStart=/root/.local/bin/herdr server
 Restart=always
 RestartSec=3
@@ -124,6 +140,13 @@ WantedBy=multi-user.target
 ```
 
 `herdr server` 只运行后台服务，不需要保持 Herdr TUI 窗口开启。
+
+两个 `ExecStartPre` 会在每次 Herdr 服务启动前：
+
+- 创建 `~/.agents/skills/herdr`。
+- 执行当前 binary 的 `herdr --skill`。
+- 原子更新 `SKILL.md`，避免写入过程中留下半文件。
+- Herdr 升级后，只要重启 `herdr.service`，Skill 就会随当前版本一起刷新。
 
 ## 6. 创建 DevSpace pane 监督器
 
@@ -370,7 +393,18 @@ HERDR_TAB_ID=...
 HERDR_WORKSPACE_ID=...
 ```
 
-### 9.3 进程归属
+### 9.3 Herdr Skill
+
+确认当前 Herdr Skill 已同步：
+
+```bash
+test -s /root/.agents/skills/herdr/SKILL.md
+head -n 20 /root/.agents/skills/herdr/SKILL.md
+```
+
+DevSpace 打开工作区后，应能从本地 Agent Skills 中发现该 Skill，使 ChatGPT 可以直接读取 Herdr 的当前版本使用规则。
+
+### 9.4 进程归属
 
 ```bash
 ps -eo pid,ppid,stat,args |
@@ -379,7 +413,7 @@ ps -eo pid,ppid,stat,args |
 
 DevSpace 的父进程链应落在 Herdr server 管理的 pane shell 下，而不是直接由 systemd 启动。
 
-### 9.4 重启恢复
+### 9.5 重启恢复
 
 ```bash
 systemctl restart herdr.service
@@ -455,6 +489,31 @@ herdr agent read worker --source visible --lines 100
 
 ## 11. 推荐提示词
 
+Herdr 在这套方案中不是用来替代 DevSpace，而是作为 **持久化终端和 Agent 会话管理层**。
+
+日常源码操作优先直接使用 DevSpace；当任务需要独立运行、耗时较长，或者需要启动 Claude 持续执行并在之后查询状态时，再使用 Herdr。
+
+推荐分工：
+
+```text
+ChatGPT
+ │
+ ├── DevSpace
+ │     ├── Read / Grep
+ │     ├── Edit / Write
+ │     ├── git diff
+ │     └── 短时 shell / build / test
+ │
+ └── Herdr
+       └── 独立持久化 pane
+             └── Claude
+                   ├── 长时间构建 / 测试
+                   ├── SSH
+                   ├── iperf
+                   ├── 持续监控
+                   └── 长时间验收
+```
+
 将下面内容中的工作区路径替换为实际项目路径后，可直接发送给 ChatGPT：
 
 ```text
@@ -463,20 +522,27 @@ herdr agent read worker --source visible --lines 100
 工作区：
 `/path/to/project`
 
-执行要求：
+工具使用规则：
 
-- 使用 DevSpace 读取、搜索和修改源码，查看 diff，并执行短时命令、构建和快速验证。
-- 调用 Herdr 前先确认 HERDR_ENV=1，并读取当前版本的 herdr --skill；如果检查失败，停止调用并说明原因。
-- 遇到耗时较长的构建、测试、SSH、监控或验收任务时，通过 Herdr 在独立 pane 中启动 Claude。
-- 优先复用同一项目中处于 idle 状态的 Claude；否则创建相邻 pane，并保留 agent 名称、pane ID 和 session ID。
-- 提交长任务时不要让单次 MCP 请求阻塞等待。任务启动后，每隔一段时间通过 Herdr 查询状态并读取最新输出，向我汇报进度。
-- 如果调用 Herdr 启动了任务，必须持续跟踪到 idle、done 或 blocked；不得在任务仍为 working 时结束。
-- 若状态为 blocked，先读取阻塞原因并向我确认，不要擅自批准高风险操作。
-- 根据 Claude 的结果继续使用 DevSpace 修改代码，再让 Claude 复测，直到完成。
-- 不要只提供命令或操作建议，必须实际执行。最终结论应附带 diff、命令输出或测试结果。
+- 使用 DevSpace：
+  - 读取、搜索和修改源码
+  - 查看 diff
+  - 执行短时 shell、构建和快速验证
+  - 能直接通过 DevSpace 完成的短任务，不要启动 Herdr Agent
+
+- 使用 Herdr：
+  - Herdr 用于管理独立、持久化的终端 pane 和 Claude Agent 会话
+  - 当任务耗时较长、不适合占用一次 MCP 请求，或需要 SSH、iperf、持续监控、长时间测试和验收时，通过 Herdr 启动 Claude 执行
+  - 使用 Herdr 时遵循 DevSpace 提供的 Herdr Skill；如果 `HERDR_ENV=1` 不成立，停止调用 Herdr 并说明原因
+  - 长任务启动后不要阻塞等待，通过 Herdr 持续跟踪到完成或 blocked 状态
+  - 若状态为 blocked，先读取阻塞原因，不要擅自批准高风险操作
+
+根据 Claude 的测试或验收结果，继续通过 DevSpace 修改代码，需要时再通过 Herdr 让 Claude 复测，直到完成目标。
+
+不要只给操作建议；必须实际执行。
 ```
 
-其中“每隔一段时间”可根据任务时长调整。一般任务建议每 30～60 秒查询一次，长时间测试可适当降低频率。
+核心判断原则：**短任务直接 DevSpace；需要独立持续运行的长任务，才使用 Herdr。**
 
 ## 12. 120 秒 PoC 实测
 
@@ -599,6 +665,7 @@ systemctl disable herdr.service
 rm -f /etc/systemd/system/devspace.service.d/herdr.conf
 rm -f /etc/systemd/system/herdr.service
 rm -f /usr/local/libexec/devspace-herdr-supervisor
+rm -rf /root/.agents/skills/herdr
 systemctl daemon-reload
 systemctl restart devspace.service
 ```
