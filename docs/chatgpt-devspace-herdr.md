@@ -129,8 +129,6 @@ Environment=XDG_CONFIG_HOME=/root/.config
 Environment=HERDR_CONFIG_PATH=/root/.config/herdr/config.toml
 Environment=HERDR_SOCKET_PATH=/root/.config/herdr/herdr.sock
 Environment=PATH=/root/.local/bin:/root/.nvm/versions/node/v22.23.2/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStartPre=/usr/bin/install -d -m 0755 /root/.agents/skills/herdr
-ExecStartPre=/bin/sh -c '/root/.local/bin/herdr --skill > /root/.agents/skills/herdr/SKILL.md.tmp && mv /root/.agents/skills/herdr/SKILL.md.tmp /root/.agents/skills/herdr/SKILL.md'
 ExecStart=/root/.local/bin/herdr server
 Restart=always
 RestartSec=3
@@ -141,12 +139,80 @@ WantedBy=multi-user.target
 
 `herdr server` 只运行后台服务，不需要保持 Herdr TUI 窗口开启。
 
-两个 `ExecStartPre` 会在每次 Herdr 服务启动前：
+### 5.1 创建 Herdr Skill 同步器
 
-- 创建 `~/.agents/skills/herdr`。
-- 执行当前 binary 的 `herdr --skill`。
-- 原子更新 `SKILL.md`，避免写入过程中留下半文件。
-- Herdr 升级后，只要重启 `herdr.service`，Skill 就会随当前版本一起刷新。
+创建 `/usr/local/bin/herdr-skill-sync`：
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+HERDR_BIN="/root/.local/bin/herdr"
+DEST_DIR="/root/.agents/skills/herdr"
+DEST_FILE="${DEST_DIR}/SKILL.md"
+TMP_FILE="$(mktemp)"
+trap 'rm -f "$TMP_FILE"' EXIT
+
+mkdir -p "$DEST_DIR"
+"$HERDR_BIN" --skill >"$TMP_FILE"
+
+if [[ ! -s "$TMP_FILE" ]]; then
+    echo "ERROR: herdr --skill produced empty output" >&2
+    exit 1
+fi
+
+mv -f "$TMP_FILE" "$DEST_FILE"
+chmod 0644 "$DEST_FILE"
+trap - EXIT
+```
+
+赋予执行权限：
+
+```bash
+chmod 0755 /usr/local/bin/herdr-skill-sync
+```
+
+同步器使用 Herdr binary 的绝对路径，并通过临时文件原子更新 `SKILL.md`。不要直接依赖 systemd 的默认 `PATH`。
+
+### 5.2 Herdr 更新后自动刷新 Skill
+
+创建 `/etc/systemd/system/herdr-skill-sync.service`：
+
+```ini
+[Unit]
+Description=Refresh global Herdr agent skill
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/herdr-skill-sync
+```
+
+创建 `/etc/systemd/system/herdr-skill-sync.path`：
+
+```ini
+[Unit]
+Description=Watch Herdr binary and refresh global agent skill
+
+[Path]
+PathChanged=/root/.local/bin/herdr
+Unit=herdr-skill-sync.service
+
+[Install]
+WantedBy=multi-user.target
+```
+
+这样 `/root/.local/bin/herdr` 更新后，会自动重新生成全局 Skill。
+
+### 5.3 DevSpace 启动前保证 Skill 已存在
+
+创建 `/etc/systemd/system/devspace.service.d/skill-sync.conf`：
+
+```ini
+[Service]
+ExecStartPre=/usr/local/bin/herdr-skill-sync
+```
+
+这层保证即使 path unit 尚未触发，DevSpace 每次启动前也会得到与当前 Herdr binary 一致的 `~/.agents/skills/herdr/SKILL.md`。
 
 ## 6. 创建 DevSpace pane 监督器
 
@@ -249,7 +315,7 @@ while true; do
             grep -q '"cmdline":"/bin/bash"'; then
             log "starting DevSpace in pane $pane_id"
             "$HERDR_BIN" pane run "$pane_id" \
-                "cd $PROJECT_ROOT && env DEVSPACE_TRUST_PROXY=1 DEVSPACE_PUBLIC_BASE_URL=$PUBLIC_BASE_URL DEVSPACE_TOOL_MODE=full DEVSPACE_ALLOWED_ROOTS=$PROJECT_ROOT PATH=$PATH $DEVSPACE_BIN serve" \
+                "cd $PROJECT_ROOT && env DEVSPACE_TRUST_PROXY=1 DEVSPACE_PUBLIC_BASE_URL=$PUBLIC_BASE_URL DEVSPACE_TOOL_MODE=full PATH=$PATH $DEVSPACE_BIN serve" \
                 >/dev/null
         else
             log "pane $pane_id is busy; waiting"
@@ -278,7 +344,30 @@ chmod 0755 /usr/local/libexec/devspace-herdr-supervisor
 
 ## 7. 修改 DevSpace systemd 服务
 
-保留原有 `devspace.service`，增加 drop-in：
+保留原有 `devspace.service`，并把 DevSpace 允许访问的根目录配置在基础 service 中。例如需要允许访问整个 root 用户目录时：
+
+```ini
+Environment=DEVSPACE_ALLOWED_ROOTS=/root
+```
+
+监督器中不要再次硬编码 `DEVSPACE_ALLOWED_ROOTS`，避免出现 `/root` 与 `/root/project` 两套配置互相覆盖。
+
+需要注意：Herdr workspace/pane 可以被复用，systemd service 的环境变量不一定会出现在已经存在的 pane 进程中。因此还应确认 DevSpace 持久配置中的 `allowedRoots` 与目标值一致：
+
+```bash
+devspace config get
+devspace doctor
+```
+
+本次实测最终均显示：
+
+```text
+Allowed roots: /root
+```
+
+并且 DevSpace 可以直接 `open_workspace("/root")`，说明 `/root` 已实际生效。
+
+然后增加 Herdr drop-in：
 
 `/etc/systemd/system/devspace.service.d/herdr.conf`
 
@@ -324,8 +413,9 @@ systemd-analyze verify \
 
 ```bash
 systemctl daemon-reload
-systemctl enable herdr.service devspace.service
+systemctl enable herdr.service herdr-skill-sync.path devspace.service
 systemctl start herdr.service
+systemctl start herdr-skill-sync.path
 systemctl restart devspace.service
 ```
 
@@ -362,8 +452,8 @@ systemd-run \
 ### 9.1 服务状态
 
 ```bash
-systemctl is-enabled herdr.service devspace.service
-systemctl is-active herdr.service devspace.service
+systemctl is-enabled herdr.service herdr-skill-sync.path devspace.service
+systemctl is-active herdr.service herdr-skill-sync.path devspace.service
 ```
 
 预期：
@@ -395,16 +485,39 @@ HERDR_WORKSPACE_ID=...
 
 ### 9.3 Herdr Skill
 
-确认当前 Herdr Skill 已同步：
+确认当前 Herdr Skill 已同步，并与当前 binary 输出一致：
 
 ```bash
 test -s /root/.agents/skills/herdr/SKILL.md
-head -n 20 /root/.agents/skills/herdr/SKILL.md
+cmp -s <(/root/.local/bin/herdr --skill) /root/.agents/skills/herdr/SKILL.md
+systemctl is-active herdr-skill-sync.path
 ```
 
-DevSpace 打开工作区后，应能从本地 Agent Skills 中发现该 Skill，使 ChatGPT 可以直接读取 Herdr 的当前版本使用规则。
+DevSpace 打开任意没有项目级 Herdr Skill 的工作区后，应自动发现：
 
-### 9.4 进程归属
+```text
+herdr
+  path: ~/.agents/skills/herdr/SKILL.md
+```
+
+本次实测在新的 `WiFiRelay` 工作区中自动发现成功。
+
+### 9.4 DevSpace Allowed Roots
+
+```bash
+devspace doctor | grep 'Allowed roots'
+devspace config get
+```
+
+预期：
+
+```text
+Allowed roots: /root
+```
+
+还应直接尝试通过 DevSpace 打开 `/root` 工作区。只检查 systemd unit 中的环境变量不够，因为复用的 Herdr pane 可能没有继承最新 systemd 环境。
+
+### 9.5 进程归属
 
 ```bash
 ps -eo pid,ppid,stat,args |
@@ -413,7 +526,7 @@ ps -eo pid,ppid,stat,args |
 
 DevSpace 的父进程链应落在 Herdr server 管理的 pane shell 下，而不是直接由 systemd 启动。
 
-### 9.5 重启恢复
+### 9.6 重启恢复
 
 ```bash
 systemctl restart herdr.service
@@ -598,7 +711,13 @@ claude --dangerously-skip-permissions
 --dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons
 ```
 
-因此 root 环境不能直接宣称为 trusted Worker。本次 PoC 使用 Claude 正常 `auto mode`，计时任务没有触发审批。
+因此 root 环境不能直接宣称为 trusted Worker。本次 PoC 使用 Claude 的 `auto` 权限模式：
+
+```bash
+claude --permission-mode auto
+```
+
+Herdr 能正常识别 Claude，实际主机配置任务也可在该模式下执行。遇到 Claude 自身判定需要交互确认的操作时，仍应按 `blocked` 状态处理。
 
 推荐选择：
 
@@ -660,10 +779,14 @@ herdr agent read worker --source detection --lines 50
 回滚会中断当前 DevSpace 与 Herdr 任务，应先确认没有正在执行的 Agent、构建或测试。
 
 ```bash
-systemctl stop devspace.service herdr.service
-systemctl disable herdr.service
+systemctl stop devspace.service herdr.service herdr-skill-sync.path
+systemctl disable herdr.service herdr-skill-sync.path
 rm -f /etc/systemd/system/devspace.service.d/herdr.conf
+rm -f /etc/systemd/system/devspace.service.d/skill-sync.conf
 rm -f /etc/systemd/system/herdr.service
+rm -f /etc/systemd/system/herdr-skill-sync.service
+rm -f /etc/systemd/system/herdr-skill-sync.path
+rm -f /usr/local/bin/herdr-skill-sync
 rm -f /usr/local/libexec/devspace-herdr-supervisor
 rm -rf /root/.agents/skills/herdr
 systemctl daemon-reload
